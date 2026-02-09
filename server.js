@@ -143,16 +143,40 @@ io.on('connection', (socket) => {
   console.log(`[Server] New connection: ${socket.id}`);
 
   // Register a peer and assign a connection ID
-  socket.on('register', async (callback) => {
+  socket.on('register', async (dataOrCallback, callbackArg) => {
+    // Support both register(callback) and register({preferredId}, callback)
+    let preferredId = null;
+    let callback = callbackArg;
+    if (typeof dataOrCallback === 'function') {
+      callback = dataOrCallback;
+    } else if (dataOrCallback && typeof dataOrCallback === 'object') {
+      preferredId = dataOrCallback.preferredId || null;
+    }
+
     const iceServers = await getIceServers();
     if (socket.connectionId && peers.has(socket.connectionId)) {
       if (callback) callback({ success: true, connectionId: socket.connectionId, iceServers });
       return;
     }
 
-    let connectionId = generateConnectionId();
-    while (peers.has(connectionId)) {
+    let connectionId;
+
+    // Try to use preferred ID if provided and not taken
+    if (preferredId) {
+      const normalizedPreferred = preferredId.replace(/-/g, '');
+      const formatted = `${normalizedPreferred.slice(0, 3)}-${normalizedPreferred.slice(3, 6)}-${normalizedPreferred.slice(6, 9)}`;
+      if (normalizedPreferred.length === 9 && !peers.has(formatted)) {
+        connectionId = formatted;
+        console.log(`[Server] Reusing preferred ID: ${connectionId}`);
+      }
+    }
+
+    // Generate new ID if preferred wasn't available
+    if (!connectionId) {
       connectionId = generateConnectionId();
+      while (peers.has(connectionId)) {
+        connectionId = generateConnectionId();
+      }
     }
 
     peers.set(connectionId, {
@@ -316,32 +340,47 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnect
+  // Handle disconnect with grace period
   socket.on('disconnect', () => {
     console.log(`[Server] Disconnected: ${socket.id}`);
     if (socket.connectionId) {
-      const peer = peers.get(socket.connectionId);
-      if (peer && peer.connectedTo) {
-        const connectedPeer = findPeerByConnectionId(peer.connectedTo);
-        if (connectedPeer) {
-          connectedPeer.socket.emit('peer-disconnected', { peerId: socket.connectionId });
-          connectedPeer.status = 'available';
-          connectedPeer.connectedTo = null;
+      const disconnectedId = socket.connectionId;
+      
+      // Give a 10s grace period before notifying peers and cleaning up
+      setTimeout(() => {
+        const peer = peers.get(disconnectedId);
+        // If peer re-registered with same ID during grace period, skip cleanup
+        if (peer && peer.socketId !== socket.id) {
+          console.log(`[Server] Peer ${disconnectedId} reconnected during grace period, skipping cleanup`);
+          return;
         }
-      }
-      for (const [requestId, request] of pendingConnections.entries()) {
-        if (request.hostConnectionId === socket.connectionId) {
-          const viewerPeer = Array.from(peers.values()).find(p => p.socketId === request.viewerSocketId);
-          if (viewerPeer) {
-            viewerPeer.socket.emit('connection-rejected', { error: 'Peer disconnected' });
+        if (!peer) {
+          console.log(`[Server] Peer ${disconnectedId} already cleaned up`);
+          return;
+        }
+        
+        if (peer.connectedTo) {
+          const connectedPeer = findPeerByConnectionId(peer.connectedTo);
+          if (connectedPeer) {
+            connectedPeer.socket.emit('peer-disconnected', { peerId: disconnectedId });
+            connectedPeer.status = 'available';
+            connectedPeer.connectedTo = null;
           }
-          pendingConnections.delete(requestId);
-        } else if (request.viewerConnectionId === socket.connectionId) {
-          pendingConnections.delete(requestId);
         }
-      }
-      peers.delete(socket.connectionId);
-      console.log(`[Server] Peer unregistered: ${socket.connectionId} (remaining: ${peers.size})`);
+        for (const [requestId, request] of pendingConnections.entries()) {
+          if (request.hostConnectionId === disconnectedId) {
+            const viewerPeer = Array.from(peers.values()).find(p => p.socketId === request.viewerSocketId);
+            if (viewerPeer) {
+              viewerPeer.socket.emit('connection-rejected', { error: 'Peer disconnected' });
+            }
+            pendingConnections.delete(requestId);
+          } else if (request.viewerConnectionId === disconnectedId) {
+            pendingConnections.delete(requestId);
+          }
+        }
+        peers.delete(disconnectedId);
+        console.log(`[Server] Peer unregistered: ${disconnectedId} (remaining: ${peers.size})`);
+      }, 10000);
     }
   });
 });
