@@ -3,7 +3,7 @@
 
 services:
   - type: web
-    name: remote-desktop-signaling
+    name: adin-rdp-server
     runtime: node
     plan: free
     buildCommand: npm install
