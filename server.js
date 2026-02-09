@@ -30,29 +30,49 @@ const io = new Server(server, {
   allowEIO3: true
 });
 
-// ICE server configuration (STUN + TURN for NAT traversal)
-const iceServers = [
+// Metered.ca TURN server API key
+const METERED_API_KEY = process.env.METERED_API_KEY || '481eba005ae7ff8abeb23c33f853dccb5003';
+const METERED_DOMAIN = process.env.METERED_DOMAIN || 'adin-rdp.metered.live';
+
+// Cached ICE servers (refreshed periodically from Metered.ca)
+let cachedIceServers = [
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject'
-  }
+  { urls: 'stun:stun1.l.google.com:19302' }
 ];
+let lastIceRefresh = 0;
+const ICE_REFRESH_INTERVAL = 6 * 60 * 60 * 1000; // Refresh every 6 hours
+
+// Fetch fresh TURN credentials from Metered.ca
+async function refreshIceServers() {
+  try {
+    const url = `https://${METERED_DOMAIN}/api/v1/turn/credentials?apiKey=${METERED_API_KEY}`;
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Metered API error: ${response.status}`);
+    const turnServers = await response.json();
+    
+    // Combine Google STUN + Metered TURN servers
+    cachedIceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      ...turnServers
+    ];
+    lastIceRefresh = Date.now();
+    console.log(`[Server] ICE servers refreshed: ${cachedIceServers.length} servers (${turnServers.length} TURN)`);
+  } catch (err) {
+    console.error('[Server] Failed to refresh ICE servers:', err.message);
+  }
+}
+
+// Get current ICE servers (refresh if stale)
+async function getIceServers() {
+  if (Date.now() - lastIceRefresh > ICE_REFRESH_INTERVAL) {
+    await refreshIceServers();
+  }
+  return cachedIceServers;
+}
+
+// Initial fetch on startup
+refreshIceServers();
 
 // CORS middleware
 app.use((req, res, next) => {
@@ -90,7 +110,8 @@ app.get('/health', (req, res) => {
 });
 
 // Get server configuration (ICE servers)
-app.get('/config', (req, res) => {
+app.get('/config', async (req, res) => {
+  const iceServers = await getIceServers();
   res.json({ iceServers });
 });
 
@@ -122,7 +143,8 @@ io.on('connection', (socket) => {
   console.log(`[Server] New connection: ${socket.id}`);
 
   // Register a peer and assign a connection ID
-  socket.on('register', (callback) => {
+  socket.on('register', async (callback) => {
+    const iceServers = await getIceServers();
     if (socket.connectionId && peers.has(socket.connectionId)) {
       if (callback) callback({ success: true, connectionId: socket.connectionId, iceServers });
       return;
