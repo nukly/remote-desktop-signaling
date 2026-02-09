@@ -193,7 +193,7 @@ io.on('connection', (socket) => {
   });
 
   // Handle connection request from viewer to host
-  socket.on('request-connection', ({ targetId, viewerName }, callback) => {
+  socket.on('request-connection', ({ targetId, viewerName, password }, callback) => {
     console.log(`[Server] Connection request from ${socket.connectionId} to ${targetId}`);
 
     const normalizedTargetId = targetId.replace(/-/g, '');
@@ -229,7 +229,8 @@ io.on('connection', (socket) => {
     targetPeer.socket.emit('connection-request', {
       requestId,
       viewerId: socket.connectionId,
-      viewerName: viewerName || 'Unknown'
+      viewerName: viewerName || 'Unknown',
+      password: password || undefined
     });
 
     if (callback) callback({ success: true, requestId });
