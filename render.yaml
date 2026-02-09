@@ -1,0 +1,14 @@
+# Render.com deployment configuration
+# Docs: https://render.com/docs/deploy-node-express-app
+
+services:
+  - type: web
+    name: remote-desktop-signaling
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health
